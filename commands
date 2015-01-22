@@ -1,0 +1,425 @@
+#!/bin/bash
+#set -e;
+
+_path=".o_rabbitmq"
+version="1.0"
+db_image="ohardy/rabbitmq"
+
+APP=$2
+OLDHOME=$HOME
+HOME="$DOKKU_ROOT/$_path"
+
+check_already_exists() {
+  if [[ -f "$HOME/db_$APP" ]]; then
+    echo "Database configured already exists with name : $APP"
+    exit 1
+  fi
+}
+
+check_exists() {
+  if [[ ! -f "$HOME/db_$APP" ]]&&[[ ! -f "$HOME/link_$APP" ]]; then
+    echo "No database configured with name : $APP"
+    exit 1
+  fi
+}
+
+check_app() {
+  if [[ -z "$APP" ]]; then
+    echo "You must specify an app name"
+    exit 1
+  fi
+}
+
+check_container() {
+  if [[ -z "$id" ]]; then
+    echo "RabbitMQ container not started cannot continue. Start with dokku rabbitmq:start"
+    exit 1
+  fi
+}
+
+load_ip_and_container() {
+  id=$(docker ps | grep "$db_image":latest | grep "manage start" | awk '{print $1}')
+  container_name=""
+  if [[ -n "$id" ]]; then
+    ip_and_port=$(docker port ${id} 5672)
+    ip=$(echo "$ip_and_port" | cut -d ':' -f 1)
+    private_ip=$(docker inspect ${id} | grep IPAddress | awk '{ print $2 }' | tr -d ',"')
+    port=$(echo "$ip_and_port" | cut -d ':' -f 2)
+    container_name=$(docker inspect -f "{{ .Name }}" $id)
+  fi
+
+  if [[ -n "$container_name" ]]; then
+    _manage="-v $HOME/shared:/shared --link $container_name:db $db_image"
+  else
+    _manage="-v $HOME/shared:/shared $db_image"
+  fi
+}
+
+manage_ti() {
+  docker run -t -i $_manage $*
+}
+
+manage() {
+  docker run $_manage $*
+}
+
+manage_host() {
+  docker run --add-host "rabbitmq:$1" -v "$HOME/data":"/data" $_manage "${@:2}"
+}
+
+do_bash() {
+  _envs=$(env_for)
+  _cmd="docker run --add-host "rabbitmq:$private_ip" -v "$HOME/data":"/data" -t -i $_envs $db_image bash"
+  $_cmd
+}
+
+db_url() {
+  _app=$1
+
+  _database=$(cat "$HOME/db_$_app")
+  _database_pw=$(cat "$HOME/pass_$_app")
+
+  echo "amqp://${_database}:${_database_pw}@${private_ip}:${port}/${_database}"
+}
+
+database_name() {
+  echo "$1" | cut -c 1-16 | tr .- _
+}
+
+migrate() {
+  if [[ ! -f "$HOME/version" ]]; then
+    cd "$HOME"
+    _files=$(ls pass_* 2> /dev/null)
+    for f in $_files; do
+      _app_to_migrate=$(echo "$f" | cut -d _ -f 2)
+      _database=$(database_name "$_app_to_migrate")
+      echo "$_database" > "$HOME/db_$_app_to_migrate"
+
+      if [[ -d "$DOKKU_ROOT/$_app_to_migrate" ]]; then
+        dokku config:unset "$_app_to_migrate" DATABASE_URL
+      fi
+    done
+
+  fi
+  echo "$version" > "$HOME/version"
+}
+
+env_for() {
+  if [[ -n "$1" ]]; then
+    _app=$1
+    if [[ -f "$HOME/db_$_app" ]]; then
+      _url=$(db_url "$APP")
+    elif [[ -f "$HOME/link_$_app" ]]; then
+      _app=$(cat "$HOME/link_$_app")
+      _url=$(db_url "$_app")
+    fi
+
+    if [[ -n "$_url" ]]; then
+      if [[ -f "$HOME/db_$_app" ]]&&[[ -f "$HOME/pass_$_app" ]]; then
+        _database=$(cat "$HOME/db_$_app")
+        _database_pw=$(cat "$HOME/pass_$_app")
+
+        echo "-e RABBITMQ_URL=$_url -e RABBITMQ_HOST=$private_ip -e RABBITMQ_PORT=$port -e RABBITMQ_VHOST=$_database -e RABBITMQ_USER=$_database -e RABBITMQ_PASS=$_database_pw"
+      fi
+    fi
+  else
+    _database="admin"
+    _database_pw=$(cat "$HOME/admin_pw")
+
+    echo "-e RABBITMQ_HOST=$private_ip -e RABBITMQ_PORT=$port -e RABBITMQ_VHOST=$_database -e RABBITMQ_USER=root -e RABBITMQ_PASS=$_database_pw"
+
+  fi
+}
+
+restart_app() {
+  _app=$1
+  if [[ -n "$_app" ]]&&[[ -d "$DOKKU_ROOT/$_app" ]]; then
+    echo "-----> Restarting application : $_app"
+    dokku release $_app
+    dokku deploy $_app
+  fi
+}
+
+restart_apps() {
+  echo "-----> Restarting applications"
+  _apps=()
+
+  cd "$HOME"
+  _files=$(ls pass_* 2> /dev/null)
+  for f in $_files; do
+    _apps+=($(echo "$f" | cut -d _ -f 2))
+  done
+
+  _files=$(ls link_* 2> /dev/null)
+  for f in $_files; do
+    _apps+=($(cat "$HOME/$f"))
+  done
+
+  _apps=$(echo "${_apps[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+  for _app in $_apps; do
+    restart_app $_app
+  done
+}
+
+load_ip_and_container
+
+admin_pw=""
+if [[ -f "$HOME/admin_pw" ]]; then
+  admin_pw=$(cat "$HOME/admin_pw")
+fi
+
+case "$1" in
+  rabbitmq:admin_console)
+    check_container
+
+    manage_ti admin_console "$admin_pw"
+    ;;
+
+  rabbitmq:console)
+    check_container
+    check_app
+    check_exists
+
+    database=$(cat "$HOME/db_$APP")
+    database_pw=$(cat "$HOME/pass_$APP")
+
+    manage_ti console "$database" "$database_pw"
+    ;;
+
+  rabbitmq:url)
+    check_container
+    check_app
+    check_exists
+
+    if [[ -f "$HOME/db_$APP" ]]; then
+      db_url "$APP"
+    elif [[ -f "$HOME/link_$APP" ]]; then
+      APP=$(cat "$HOME/link_$APP")
+      db_url "$APP"
+    fi
+    ;;
+  rabbitmq:create)
+    check_container
+    check_app
+    check_already_exists
+
+    new_password=$(openssl rand -base64 32|base64)
+    database=$(database_name "$APP")
+    echo "$database" > "$HOME/db_$APP"
+    echo "$new_password" > "$HOME/pass_$APP"
+    chmod 700 "$HOME/db_$APP"
+    chmod 700 "$HOME/pass_$APP"
+
+    manage_host "$private_ip" create "$database" "$admin_pw" "$new_password"
+    ;;
+  rabbitmq:delete)
+    check_container
+    check_app
+    check_exists
+
+    database=$(cat "$HOME/db_$APP")
+    manage_host "$private_ip" delete "$database" "$admin_pw"
+
+    rm -f "$HOME/db_$APP"
+    rm -f "$HOME/pass_$APP"
+
+    ;;
+
+  rabbitmq:list)
+    check_container
+
+    manage_host "$private_ip" list "$admin_pw"
+    ;;
+
+  rabbitmq:bash)
+    do_bash
+    ;;
+
+  rabbitmq:pre_build)
+    if [[ -z "$id" ]]; then
+      if [[ -d "$DOKKU_ROOT/$APP" ]]; then
+        if [[ -n "$DOKKU_DEV" ]]; then
+          ./commands rabbitmq:start
+        else
+          dokku rabbitmq:start
+        fi
+
+        sleep 5
+      fi
+    fi
+
+    ;;
+
+  rabbitmq:start)
+    if [[ "$id" != "" ]]; then
+      echo "RabbitMQ container already running with ID: ${id}"
+    else
+      echo "-----> Starting RabbitMQ server"
+      docker run --add-host "rabbitmq:127.0.0.1" -h rabbitmq -d -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672 -p 127.0.0.1:4369:4369 -v "$HOME/data":"/data" "$db_image" start
+    fi
+    restart_apps
+    ;;
+
+  rabbitmq:restart)
+    if [[ ! -z "$DOKKU_DEV" ]]; then
+      ./commands rabbitmq:stop
+      ./commands rabbitmq:start
+    else
+      dokku rabbitmq:stop
+      dokku rabbitmq:start
+    fi
+    ;;
+
+  rabbitmq:init)
+    if [[ "$id" != "" ]]; then
+      echo "RabbitMQ container already running with ID: ${id}"
+    else
+      docker run --add-host "rabbitmq:127.0.0.1" -h rabbitmq -d -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672 -p 127.0.0.1:4369:4369 -v "$HOME/data":"/data" "$db_image" init "$admin_pw"
+    fi
+    ;;
+
+  rabbitmq:stop)
+    check_container
+    echo "-----> Stopping RabbitMQ server"
+    docker stop ${id}
+    ;;
+
+  # rabbitmq:dump)
+  #   check_container
+  #   check_app
+  #   check_exists
+  #
+  #   database=$(cat "$HOME/db_$APP")
+  #
+  #   name=$(openssl rand -base64 32|base64)
+  #   manage_host "$private_ip" dump "$database" "$name" "$admin_pw"
+  #
+  #   if [[ -f "$HOME/shared/$name" ]]; then
+  #     cat "$HOME/shared/$name"
+  #     rm -f "$HOME/shared/$name"
+  #   fi
+  #   ;;
+
+  # rabbitmq:restore)
+  #   check_container
+  #   check_app
+  #   check_exists
+  #
+  #   database=$(cat "$HOME/db_$APP")
+  #
+  #   name=$(openssl rand -base64 32|base64)
+  #   cat - > "$HOME/shared/$name"
+  #
+  #   manage "$private_ip" restore "$database" "$name" "$admin_pw"
+  #   rm -f "$HOME/shared/$name"
+  #   ;;
+
+  rabbitmq:status)
+    if [[ "$id" != "" ]]; then
+      echo "RabbitMQ container running with ID: ${id}"
+    else
+      echo "RabbitMQ container not running"
+    fi
+    ;;
+
+  rabbitmq:migrate)
+    migrate
+    ;;
+
+  rabbitmq:link)
+    check_container
+    check_app
+    check_exists
+
+    if [[ ! -f "$HOME/link_$3" ]]; then
+      echo "$APP" > "$HOME/link_$3"
+
+      restart_app $3
+    else
+      echo "A link already exist for $3"
+    fi
+    ;;
+
+  rabbitmq:unlink)
+    check_container
+    check_app
+    check_exists
+
+    if [[ -f "$HOME/link_$APP" ]]; then
+      rm -f "$HOME/link_$APP"
+    fi
+
+    restart_app $APP
+    ;;
+  rabbitmq:env)
+    env_for $APP
+    ;;
+
+  rabbitmq:install)
+    if [[ -d "$HOME" ]]; then
+      migrate
+      echo "RabbitMQ data already exist in "$HOME", installation aborded "
+    fi
+
+    if [[ ! -d "$HOME" ]]; then
+      mkdir -p "$HOME/data"
+      mkdir -p "$HOME/shared"
+
+      echo "$version" > "$HOME/version"
+
+      if [[ ! -f "$HOME/admin_pw" ]]; then
+        admin_pw=$(openssl rand -base64 32|base64)
+        echo $admin_pw > "$HOME/admin_pw"
+
+        chown -R dokku: "$HOME"
+        chmod 700 "$HOME/admin_pw"
+
+        if [[ ! -z "$DOKKU_DEV" ]]; then
+          ./commands rabbitmq:init
+        else
+          dokku rabbitmq:init
+        fi
+
+        # docker run "$db_image" cmd "cd /data && tar -cp ./" | tar -x -C "$HOME/data/" -f -
+        # docker run "$db_image" cmd "rm -rf /data && mkdir -p /data"
+        # docker run "$db_image" cmd "chown -R rabbitmq:rabbitmq /data"
+
+      fi
+    fi
+    ;;
+  rabbitmq:update)
+    if [[ $(id -un) = "dokku" ]]; then
+      dokku plugins-update
+    fi
+
+    DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    if [[ -d "$DIR/.git" ]]; then
+      pushd "$DIR"
+      dokku rabbitmq:stop
+      sudo git pull
+      docker rmi "$db_image"
+      docker pull "$db_image"
+      dokku rabbitmq:migrate
+      dokku rabbitmq:start
+      popd
+    fi
+    ;;
+  help)
+    cat && cat<<EOF
+    rabbitmq:console     <app>               Launch a RabbitMQ console for a given app
+    rabbitmq:env         <app>               Get generated environment variables for <app>
+    rabbitmq:url         <app>               Get DATABASE_URL for <app>
+    rabbitmq:create      <app>               Create a RabbitMQ database
+    rabbitmq:delete      <app>               Delete specified RabbitMQ database
+    rabbitmq:link        <app> <another_app> Give environment variable of database of <app> to <another_app>
+    rabbitmq:unlink      <another_app>       Unlink <another_app> to a database
+    rabbitmq:restart                         Restart the RabbitMQ docker container and linked app
+    rabbitmq:start                           Start the RabbitMQ docker container if it isn't running
+    rabbitmq:stop                            Stop the RabbitMQ docker container
+    rabbitmq:status                          Shows status of RabbitMQ
+    rabbitmq:list                            List all databases
+    rabbitmq:update                          Update this plugin
+    rabbitmq:migrate                         Migrate
+EOF
+    ;;
+esac

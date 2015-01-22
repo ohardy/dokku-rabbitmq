@@ -1,0 +1,7 @@
+#!/bin/bash
+
+if [[ ! -z "$DOKKU_DEV" ]]; then
+  ./commands rabbitmq:update
+else
+  dokku rabbitmq:update
+fi

@@ -1,0 +1,126 @@
+#!/bin/bash
+#set -e;
+
+# ip=$DB_PORT_5672_TCP_ADDR
+# port=$DB_PORT_5672_TCP_PORT
+
+prefix_cmd() {
+  rm -f /var/lib/rabbitmq/.erlang.cookie
+  rm -f ~/.erlang.cookie
+  ln -s /data/.erlang.cookie /var/lib/rabbitmq/
+  ln -s /data/.erlang.cookie ~/
+
+  chown -R rabbitmq /var/lib/rabbitmq/
+  chown -R rabbitmq /data
+
+  usermod -d /data rabbitmq
+}
+
+prefix="RABBITMQ_CONFIG_FILE=/data/etc/rabbitmq.config RABBITMQ_BASE=/data RABBITMQ_LOG_BASE=/data/log RABBITMQ_MNESIA_BASE=/data/mnesia"
+
+case "$1" in
+  start)
+    prefix_cmd
+
+    sudo $prefix rabbitmq-server -detached
+    sleep 15
+    cat /data/log/*
+    tail -n 0 -q -f /data/log/*
+  ;;
+
+  init)
+    admin_pw=$2
+
+    mkdir -p /data/mnesia
+    mkdir -p /data/log
+    mkdir -p /data/etc
+
+    usermod -d /data rabbitmq
+
+    echo "[{rabbit, [{loopback_users, []}]}]." > /data/etc/rabbitmq.config
+
+    chmod -R 777 /data
+
+    sudo RABBITMQ_CONFIG_FILE=/data/etc/rabbitmq.config RABBITMQ_BASE=/data RABBITMQ_LOG_BASE=/data/log RABBITMQ_MNESIA_BASE=/data/mnesia rabbitmq-server -detached
+    sleep 10
+    rabbitmqctl add_user root $admin_pw
+    rabbitmqctl set_permissions -p / root ".*" ".*" ".*"
+    rabbitmqctl set_user_tags root administrator
+    # remove default user
+    rabbitmqctl delete_user guest
+    rabbitmqctl stop
+    sleep 5
+
+    mv /var/lib/rabbitmq/.erlang.cookie /data/
+    ln -s /data/.erlang.cookie /var/lib/rabbitmq/
+    ln -s /data/.erlang.cookie ~/
+
+    chown -R rabbitmq /data
+  ;;
+  create)
+    name=$2
+    admin_pw=$3
+    database_pw=$4
+
+    prefix_cmd
+
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" add_vhost $name
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" add_user $name $database_pw
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" set_permissions -p $name $name ".*" ".*" ".*"
+
+  ;;
+  delete)
+    name=$2
+    admin_pw=$3
+
+    prefix_cmd
+
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" clear_permissions -p $name $name
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" delete_user $name $database_pw
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" delete_vhost $name
+
+  ;;
+  admin_console)
+    admin_pw=$2
+
+    prefix_cmd
+
+  ;;
+  list)
+    admin_pw=$2
+
+    prefix_cmd
+
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" list_users
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" list_vhosts
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" list_permissions
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" list_user_permissions
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" list_parameters
+
+  ;;
+  # dump)
+  #   name=$2
+  #   filename=$3
+  #   admin_pw=$4
+  #   mysqldump -u root --password="$admin_pw" -h "$ip" -P "$port" "$name" > "/shared/$filename"
+  # ;;
+  # restore)
+  #   name=$2
+  #   filename=$3
+  #   admin_pw=$4
+  #
+  #   mysql -u root --password="$admin_pw" -h "$ip" -P "$port" "$name" < "/shared/$filename"
+  # ;;
+  # console)
+  #   name=$2
+  #   database_pw=$3
+  #
+  #   # mongo -u "$name" -p "$database_pw" --host "$ip" --port "$port" --authenticationDatabase admin
+  # ;;
+  bash)
+    bash
+  ;;
+  cmd)
+    bash -c "$2"
+  ;;
+esac

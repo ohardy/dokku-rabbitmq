@@ -255,7 +255,7 @@ case "$1" in
       echo "RabbitMQ container already running with ID: ${id}"
     else
       echo "-----> Starting RabbitMQ server"
-      docker run --add-host "rabbitmq:127.0.0.1" -h rabbitmq -d -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672 -p 127.0.0.1:4369:4369 -v "$HOME/data":"/data" "$db_image" start
+      docker run --add-host "rabbitmq:127.0.0.1" -h rabbitmq -d -p 127.0.0.1:5672:5672 -p 15672:15672 -p 127.0.0.1:4369:4369 -v "$HOME/data":"/data" "$db_image" start
     fi
     restart_apps
     ;;
@@ -274,7 +274,7 @@ case "$1" in
     if [[ "$id" != "" ]]; then
       echo "RabbitMQ container already running with ID: ${id}"
     else
-      docker run --add-host "rabbitmq:127.0.0.1" -h rabbitmq -d -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672 -p 127.0.0.1:4369:4369 -v "$HOME/data":"/data" "$db_image" init "$admin_pw"
+      docker run --add-host "rabbitmq:127.0.0.1" -h rabbitmq -d -p 127.0.0.1:5672:5672 -p 15672:15672 -p 127.0.0.1:4369:4369 -v "$HOME/data":"/data" "$db_image" init "$admin_pw"
     fi
     ;;
 

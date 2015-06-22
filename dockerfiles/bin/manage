@@ -98,6 +98,13 @@ case "$1" in
     sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" list_parameters
 
   ;;
+  stop)
+    admin_pw=$2
+
+    prefix_cmd
+    sudo $prefix rabbitmqctl -n "rabbit@rabbitmq" stop
+
+  ;;
   # dump)
   #   name=$2
   #   filename=$3
